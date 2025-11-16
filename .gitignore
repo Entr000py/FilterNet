@@ -1,0 +1,84 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Type checker caches
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# IDE / editor settings
+.idea/
+.vscode/
+*.swp
+*~
+
+# Notebook checkpoints
+.ipynb_checkpoints
+
+# Project artifacts
+checkpoints/
+test_results/
+results/
+result_long_term_forecast.txt
+*.pth
+*.pt
+
+# Data directories and cached arrays
+dataset/
+data/
+*.npy
+
+# OS files
+.DS_Store
+Thumbs.db
