@@ -2,6 +2,25 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from layers.RevIN import RevIN
+from models.temporal_conv import TemporalConv
+
+
+class TemporalConvEmbedding(nn.Module):
+    def __init__(self, seq_len: int, embed_size: int, dilation_factor: int = 1):
+        super().__init__()
+        self.seq_len = seq_len
+        self.embed_size = embed_size
+        self.temporal_conv = TemporalConv(
+            cin=1, cout=embed_size, dilation_factor=dilation_factor, seq_len=seq_len
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, N, L]
+        x_tc = x.unsqueeze(1)
+        x_tc = self.temporal_conv(x_tc)
+        x_tc = x_tc.mean(dim=-1)  # [B, D, N]
+        x_tc = x_tc.permute(0, 2, 1).contiguous()
+        return x_tc
 
 
 class Model(nn.Module):
@@ -19,6 +38,15 @@ class Model(nn.Module):
 
         self.revin_layer = RevIN(configs.enc_in, affine=True, subtract_last=False)
         self.embedding = nn.Linear(self.seq_len, self.embed_size)
+        self.temporal_embed = TemporalConvEmbedding(
+            seq_len=self.seq_len,
+            embed_size=self.embed_size,
+            dilation_factor=getattr(configs, "temporal_conv_dilation", 1),
+        )
+        self.embed_gate = nn.Sequential(
+            nn.Linear(self.embed_size * 2, self.embed_size),
+            nn.Sigmoid(),
+        )
         self.token = nn.Conv1d(in_channels=self.seq_len, out_channels=self.embed_size, kernel_size=(1,))
 
         self.w = nn.Parameter(self.scale * torch.randn(2, self.embed_size))
@@ -94,7 +122,10 @@ class Model(nn.Module):
         x = z
 
         x = x.permute(0, 2, 1)
-        x = self.embedding(x)  # B, N, D
+        x_lin = self.embedding(x)
+        x_conv = self.temporal_embed(x)
+        gate = self.embed_gate(torch.cat([x_lin, x_conv], dim=-1))
+        x = x_lin + gate * x_conv
         x = self.layernorm(x)
         x = torch.fft.rfft(x, dim=1, norm='ortho')
 
