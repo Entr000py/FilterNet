@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
+
 from layers.RevIN import RevIN
+from models.temporal_conv import temporal_conv
 
 class Model(nn.Module):
 
@@ -15,6 +17,15 @@ class Model(nn.Module):
         self.hidden_size = configs.hidden_size  # 全连接层内部维度
         
         self.w = nn.Parameter(self.scale * torch.randn(1, self.embed_size))  # 频域卷积核
+
+        temporal_channels = max(1, getattr(configs, "temporal_conv_channels", 4))
+        temporal_dilation = max(1, getattr(configs, "temporal_conv_dilation", 1))
+        self.temporal_conv = temporal_conv(
+            cin=1,
+            cout=temporal_channels,
+            dilation_factor=temporal_dilation,
+            seq_len=self.seq_len,
+        )
 
         # 简单的前向全连接结构：嵌入 -> 非线性 -> 输出
         self.fc = nn.Sequential(
@@ -37,6 +48,10 @@ class Model(nn.Module):
         x = z
 
         x = x.permute(0, 2, 1)  # -> (B, enc_in, seq_len)
+        x = x.unsqueeze(1)  # -> (B, 1, enc_in, seq_len)
+
+        x = self.temporal_conv(x)  # -> (B, C_t, enc_in, seq_len)
+        x = x.mean(dim=1)  # 聚合临时通道，回到 (B, enc_in, seq_len)
 
         x = self.circular_convolution(x, self.w.to(x.device))  # (B, enc_in, seq_len)
 
