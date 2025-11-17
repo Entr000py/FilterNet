@@ -15,7 +15,8 @@ class dilated_inception(nn.Module):
         self.seq_len = seq_len
         self.kernel_set = [2,3,6,7]
         # 将通道平均分为N组. N是卷积层的个数
-        cout = int(cout/len(self.kernel_set))
+        # 防止整除后通道数为 0，至少保证每个卷积分支有 1 个通道
+        cout = max(1, int(cout/len(self.kernel_set)))
         # k个1D因果膨胀卷积
         for kern in self.kernel_set:
             self.tconv.append(nn.Conv2d(cin,cout,(1,kern),dilation=(1,dilation_factor)))
