@@ -173,9 +173,12 @@ class EnergyGatedTexFilter(nn.Module):
             + torch.einsum("bid,d->bid", o1_real, self.w1[1])
             + self.ib2
         )
+        # 先在最后一维堆叠实部和虚部，再通过 torch.complex 显式构造复数，
+        # 避免 torch.view_as_complex 对底层 storage_offset 的严格要求。
         y = torch.stack([o2_real, o2_imag], dim=-1)
         y = F.softshrink(y, lambd=self.sparsity_threshold)
-        return torch.view_as_complex(y)
+        real, imag = y.unbind(dim=-1)
+        return torch.complex(real, imag)
 
     def forward(self, x_fft: torch.Tensor) -> torch.Tensor:
         """在频域上同时应用全局与动态复数滤波器。
@@ -195,7 +198,9 @@ class EnergyGatedTexFilter(nn.Module):
                 weight, size=x_fft.shape[1], mode="linear", align_corners=False
             )
             global_weight = weight.view(self.embed_size, 2, -1).permute(2, 0, 1).contiguous()
-        global_w = torch.view_as_complex(global_weight)
+        # 使用 torch.complex 明确构造复数权重，避免 view_as_complex 的 storage_offset 限制
+        real_w, imag_w = global_weight.unbind(dim=-1)
+        global_w = torch.complex(real_w, imag_w)
         out_global = x_fft * global_w
 
         energy_mask = self.create_adaptive_energy_mask(x_fft)
