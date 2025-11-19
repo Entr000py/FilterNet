@@ -234,7 +234,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                 preds.append(pred)
                 trues.append(true)
-                if i % 20 == 0:
+                if i % 200 == 0:
                     input = batch_x.detach().cpu().numpy()
                     if test_data.scale and self.args.inverse:
                         shape = input.shape
