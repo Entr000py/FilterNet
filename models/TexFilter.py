@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from layers.RevIN import RevIN
 from models.temporal_conv import TemporalConv
+from models.gated_fusion import ComplexMSTFusion
 
 
 class SEBlock(nn.Module):
@@ -119,6 +120,9 @@ class EnergyGatedTexFilter(nn.Module):
         self.rb2 = nn.Parameter(self.scale * torch.randn(self.embed_size))
         self.ib2 = nn.Parameter(self.scale * torch.randn(self.embed_size))
 
+        # MSTF 复数门控融合模块
+        self.fusion_layer = ComplexMSTFusion(channels=self.embed_size)
+
     def create_adaptive_energy_mask(self, x_fft: torch.Tensor) -> torch.Tensor:
         """构建基于能量的可微掩码。
 
@@ -207,7 +211,10 @@ class EnergyGatedTexFilter(nn.Module):
         dynamic_w = self.generate_dynamic_weight(x_fft)
         out_dynamic = x_fft * dynamic_w * energy_mask.to(x_fft.device)
 
-        return out_global + out_dynamic
+        # 使用 MSTF 复数门控融合替代简单相加
+        out_fused = self.fusion_layer([out_global, out_dynamic])
+
+        return out_fused
 
 
 class Model(nn.Module):
