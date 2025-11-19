@@ -6,7 +6,16 @@ from models.temporal_conv import TemporalConv
 
 
 class SEBlock(nn.Module):
-    """Squeeze-and-Excitation block to recalibrate temporal features."""
+    """通道注意力（SE）模块，用于重标定时间特征。
+
+    本模块将最后一维视为时间维，在时间维上做压缩（平均池化），
+    对嵌入维 D 做逐通道的加权，从而实现通道级别的注意力。
+
+    约定张量形状
+    -----------
+    x:   [B, D, N, T]  其中 B: batch, D: embedding 维度, N: 变量/节点数, T: 时间长度
+    out: 与 x 相同形状 [B, D, N, T]
+    """
 
     def __init__(self, channel: int, reduction: int = 4):
         super().__init__()
@@ -18,8 +27,18 @@ class SEBlock(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """在时间维上聚合并进行通道加权。
+
+        参数
+        ----
+        x: 形状为 [B, D, N, T] 的张量。
+
+        返回
+        ----
+        与输入形状一致的张量 [B, D, N, T]，但在通道维 D 上进行了重标定。
+        """
         b, d, n, _ = x.size()
-        # Only squeeze the temporal dimension to avoid relying on None-sized pools
+        # 只在时间维 T 上做平均池化，避免依赖动态池化算子
         y = x.mean(dim=-1, keepdim=True).view(b, d, n)
         y = y.permute(0, 2, 1).reshape(b * n, d)
         y = self.fc(y).view(b, n, d, 1).permute(0, 2, 1, 3)
@@ -28,6 +47,17 @@ class SEBlock(nn.Module):
 
 class TemporalConvEmbedding(nn.Module):
     def __init__(self, seq_len: int, embed_size: int, dilation_factor: int = 1):
+        """基于时间卷积的嵌入模块。
+
+        在时间维上使用空洞卷积进行特征提取，然后在时间维上聚合，
+        得到每个变量的定长嵌入。
+
+        参数
+        ----
+        seq_len: 输入序列长度 L。
+        embed_size: 输出嵌入维度 D。
+        dilation_factor: 时间卷积中的扩张系数。
+        """
         super().__init__()
         self.seq_len = seq_len
         self.embed_size = embed_size
@@ -37,6 +67,17 @@ class TemporalConvEmbedding(nn.Module):
         self.se_block = SEBlock(channel=embed_size, reduction=4)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """前向传播：生成时间卷积嵌入。
+
+        参数
+        ----
+        x: 形状为 [B, N, L] 的张量，
+           B 为 batch 大小，N 为变量/通道数，L 为输入时间长度。
+
+        返回
+        ----
+        形状为 [B, N, D] 的张量，其中 D == embed_size。
+        """
         # x: [B, N, L]
         x_tc = x.unsqueeze(1)
         x_tc = self.temporal_conv(x_tc)
@@ -48,6 +89,18 @@ class TemporalConvEmbedding(nn.Module):
 
 class EnergyGatedTexFilter(nn.Module):
     def __init__(self, configs):
+        """频域纹理滤波模块，带可学习门控。
+
+        本模块在“通道维”的 FFT 频域上操作复数特征，
+        同时学习一个全局滤波器和一个与输入相关的动态滤波器，
+        并由局部能量进行门控以实现自适应抑制/增强。
+
+        参数
+        ----
+        configs: 配置对象，至少包含
+            - enc_in: 输入通道数 C。
+            - embed_size: 嵌入维度 D。
+        """
         super().__init__()
         self.embed_size = configs.embed_size
         self.scale = 0.02
@@ -67,18 +120,39 @@ class EnergyGatedTexFilter(nn.Module):
         self.ib2 = nn.Parameter(self.scale * torch.randn(self.embed_size))
 
     def create_adaptive_energy_mask(self, x_fft: torch.Tensor) -> torch.Tensor:
-        # Sum over embedding dimension to match the mask design in TSLANet
+        """构建基于能量的可微掩码。
+
+        参数
+        ----
+        x_fft: 形状为 [B, F, D] 的复数张量，
+               F 为在通道维上做 FFT 后的频点数，D 为嵌入维。
+
+        返回
+        ----
+        形状为 [B, F, 1] 的实数掩码，前向为硬门控，反向使用直通估计。
+        """
+        # 在嵌入维 D 上累加能量，使设计与 TSLANet 掩码保持一致
         energy = torch.abs(x_fft).pow(2).sum(dim=-1)
         b = energy.size(0)
         flat_energy = energy.view(b, -1)
         median_energy = flat_energy.median(dim=1, keepdim=True)[0].view(b, 1)
         normalized_energy = energy / (median_energy + 1e-6)
-        # Straight-through estimator: forward uses the hard mask, backward keeps gradients
+        # 直通估计：前向用硬掩码，反向保留梯度
         hard_mask = (normalized_energy > self.threshold_param).float()
         adaptive_mask = (hard_mask - normalized_energy).detach() + normalized_energy
         return adaptive_mask.unsqueeze(-1)
 
     def generate_dynamic_weight(self, x: torch.Tensor) -> torch.Tensor:
+        """生成与输入相关的动态复数频域滤波器。
+
+        参数
+        ----
+        x: 形状为 [B, F, D] 的复数张量。
+
+        返回
+        ----
+        形状为 [B, F, D] 的复数张量，表示每个样本的动态频域权重。
+        """
         o1_real = F.relu(
             torch.einsum("bid,d->bid", x.real, self.w[0])
             - torch.einsum("bid,d->bid", x.imag, self.w[1])
@@ -104,6 +178,16 @@ class EnergyGatedTexFilter(nn.Module):
         return torch.view_as_complex(y)
 
     def forward(self, x_fft: torch.Tensor) -> torch.Tensor:
+        """在频域上同时应用全局与动态复数滤波器。
+
+        参数
+        ----
+        x_fft: 沿通道维做 FFT 得到的复数张量，形状为 [B, F, D]。
+
+        返回
+        ----
+        形状为 [B, F, D] 的复数张量，为滤波后的频域特征。
+        """
         global_weight = self.global_weight
         if global_weight.shape[0] != x_fft.shape[1]:
             weight = global_weight.permute(1, 2, 0).reshape(1, -1, global_weight.shape[0])
@@ -124,6 +208,18 @@ class EnergyGatedTexFilter(nn.Module):
 class Model(nn.Module):
 
     def __init__(self, configs):
+        """主预测模型，内置频域纹理滤波器。
+
+        参数
+        ----
+        configs: 配置对象，至少包含
+            - seq_len: 输入序列长度 L。
+            - pred_len: 预测长度 P。
+            - enc_in: 输入通道数 C。
+            - embed_size: 嵌入维度 D。
+            - hidden_size: MLP 头部的隐藏维度 H。
+            - dropout: dropout 比例。
+        """
         super(Model, self).__init__()
         self.seq_len = configs.seq_len
         self.pred_len = configs.pred_len
@@ -157,7 +253,24 @@ class Model(nn.Module):
         self.dropout = nn.Dropout(self.dropout_rate)
 
     def forward(self, x, x_mark_enc, x_dec, x_mark_dec, mask=None):
-        # x: [Batch, Input length, Channel]
+        """前向传播。
+
+        模型先对输入做可逆归一化，然后为每个通道构建时间卷积嵌入，
+        在“通道维”的频域上应用可学习滤波器，最后映射到预测窗口长度。
+
+        参数
+        ----
+        x: 形状为 [B, L, C] 的输入序列。
+        x_mark_enc: 预留的时间特征（当前未使用，保持接口兼容）。
+        x_dec: 解码器输入（当前未使用）。
+        x_mark_dec: 解码器时间特征（当前未使用，保持接口兼容）。
+        mask: 可选掩码（当前未使用）。
+
+        返回
+        ----
+        形状为 [B, P, C] 的预测结果，其中 P == pred_len。
+        """
+        # x: [B, L, C]  (batch, 输入长度, 通道数)
         B, L, N = x.shape
         x = self.revin_layer(x, 'norm')
 
@@ -179,5 +292,4 @@ class Model(nn.Module):
         x = x.permute(0, 2, 1)
 
         x = self.revin_layer(x, 'denorm')
-
         return x
